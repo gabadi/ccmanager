@@ -5,5 +5,9 @@
   },
   "cancel": {
     "key": "escape"
+  },
+  "toggleMode": {
+    "ctrl": true,
+    "key": "t"
   }
 }

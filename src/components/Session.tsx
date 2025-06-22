@@ -1,8 +1,9 @@
-import React, {useEffect, useState} from 'react';
+import React, {useCallback, useEffect, useState} from 'react';
 import {useStdout} from 'ink';
-import {Session as SessionType} from '../types/index.js';
+import {Session as SessionType, TerminalMode} from '../types/index.js';
 import {SessionManager} from '../services/sessionManager.js';
 import {shortcutManager} from '../services/shortcutManager.js';
+import {spawn, IPty} from 'node-pty';
 
 interface SessionProps {
 	session: SessionType;
@@ -17,6 +18,97 @@ const Session: React.FC<SessionProps> = ({
 }) => {
 	const {stdout} = useStdout();
 	const [isExiting, setIsExiting] = useState(false);
+	const [currentMode, setCurrentMode] = useState<TerminalMode>(
+		session.currentMode || 'claude',
+	);
+	const [bashProcess, setBashProcess] = useState<IPty | null>(
+		session.bashProcess || null,
+	);
+
+	// Create bash PTY on-demand
+	const createBashProcess = useCallback(() => {
+		if (bashProcess) return bashProcess;
+
+		const bashPty = spawn('/bin/bash', [], {
+			name: 'xterm-color',
+			cols: process.stdout.columns || 80,
+			rows: process.stdout.rows || 24,
+			cwd: session.worktreePath,
+			env: process.env,
+		});
+
+		// Set up data handler for bash PTY
+		bashPty.onData((data: string) => {
+			if (currentMode === 'bash' && !isExiting) {
+				stdout.write(data);
+			}
+			// Store bash history for session restoration
+			if (!session.bashHistory) {
+				session.bashHistory = [];
+			}
+			session.bashHistory.push(Buffer.from(data, 'utf8'));
+
+			// Limit bash history memory usage
+			const MAX_BASH_HISTORY_SIZE = 5 * 1024 * 1024; // 5MB
+			let totalSize = session.bashHistory.reduce(
+				(sum, buf) => sum + buf.length,
+				0,
+			);
+			while (
+				totalSize > MAX_BASH_HISTORY_SIZE &&
+				session.bashHistory.length > 0
+			) {
+				const removed = session.bashHistory.shift();
+				if (removed) {
+					totalSize -= removed.length;
+				}
+			}
+		});
+
+		// Store reference in session for cleanup
+		session.bashProcess = bashPty;
+		setBashProcess(bashPty);
+
+		return bashPty;
+	}, [bashProcess, currentMode, isExiting, session, stdout]);
+
+	// Display visual mode indicator
+	const displayModeIndicator = useCallback(
+		(mode: TerminalMode) => {
+			if (!stdout) return;
+
+			const indicator =
+				mode === 'claude'
+					? '\x1b[44m Claude \x1b[0m \x1b[90m(Ctrl+T: Bash)\x1b[0m'
+					: '\x1b[42m Bash \x1b[0m \x1b[90m(Ctrl+T: Claude)\x1b[0m';
+
+			// Display in status line at top of terminal
+			stdout.write(`\x1b[s\x1b[1;1H${indicator}\x1b[u`);
+		},
+		[stdout],
+	);
+
+	// Toggle between Claude and Bash modes
+	const toggleMode = useCallback(() => {
+		if (currentMode === 'claude') {
+			// Switch to bash mode
+			createBashProcess();
+			setCurrentMode('bash');
+			session.currentMode = 'bash';
+			displayModeIndicator('bash');
+
+			// Restore bash history if available
+			if (session.bashHistory && session.bashHistory.length > 0) {
+				// Only restore if bash just started (empty screen)
+				// This prevents double output when switching back
+			}
+		} else {
+			// Switch to claude mode
+			setCurrentMode('claude');
+			session.currentMode = 'claude';
+			displayModeIndicator('claude');
+		}
+	}, [currentMode, session, displayModeIndicator, createBashProcess]);
 
 	useEffect(() => {
 		if (!stdout) return;
@@ -100,6 +192,14 @@ const Session: React.FC<SessionProps> = ({
 			if (session.terminal) {
 				session.terminal.resize(cols, rows);
 			}
+			// Resize bash PTY if it exists
+			if (bashProcess) {
+				try {
+					bashProcess.resize(cols, rows);
+				} catch (_error) {
+					// Handle resize error gracefully
+				}
+			}
 		};
 
 		stdout.on('resize', handleResize);
@@ -120,11 +220,12 @@ const Session: React.FC<SessionProps> = ({
 			if (isExiting) return;
 
 			// Check for return to menu shortcut
-			const returnToMenuShortcut = shortcutManager.getShortcuts().returnToMenu;
-			const shortcutCode =
+			const shortcuts = shortcutManager.getShortcuts();
+			const returnToMenuShortcut = shortcuts.returnToMenu;
+			const returnToMenuCode =
 				shortcutManager.getShortcutCode(returnToMenuShortcut);
 
-			if (shortcutCode && data === shortcutCode) {
+			if (returnToMenuCode && data === returnToMenuCode) {
 				// Disable focus reporting mode before returning to menu
 				if (stdout) {
 					stdout.write('\x1b[?1004l');
@@ -137,11 +238,28 @@ const Session: React.FC<SessionProps> = ({
 				return;
 			}
 
-			// Pass all other input directly to the PTY
-			session.process.write(data);
+			// Check for mode toggle shortcut (Ctrl+T)
+			const toggleModeShortcut = shortcuts.toggleMode;
+			const toggleModeCode =
+				shortcutManager.getShortcutCode(toggleModeShortcut);
+
+			if (toggleModeCode && data === toggleModeCode) {
+				toggleMode();
+				return;
+			}
+
+			// Route input to appropriate PTY based on current mode
+			if (currentMode === 'claude') {
+				session.process.write(data);
+			} else if (currentMode === 'bash' && bashProcess) {
+				bashProcess.write(data);
+			}
 		};
 
 		stdin.on('data', handleStdinData);
+
+		// Display initial mode indicator
+		displayModeIndicator(currentMode);
 
 		return () => {
 			// Remove listener first to prevent any race conditions
@@ -171,7 +289,18 @@ const Session: React.FC<SessionProps> = ({
 			sessionManager.off('sessionExit', handleSessionExit);
 			stdout.off('resize', handleResize);
 		};
-	}, [session, sessionManager, stdout, onReturnToMenu, isExiting]);
+	}, [
+		session,
+		sessionManager,
+		stdout,
+		onReturnToMenu,
+		isExiting,
+		bashProcess,
+		currentMode,
+		displayModeIndicator,
+		toggleMode,
+		createBashProcess,
+	]);
 
 	// Return null to render nothing (PTY output goes directly to stdout)
 	return null;
