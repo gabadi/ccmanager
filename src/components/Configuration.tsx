@@ -5,6 +5,7 @@ import ConfigureShortcuts from './ConfigureShortcuts.js';
 import ConfigureHooks from './ConfigureHooks.js';
 import ConfigureWorktree from './ConfigureWorktree.js';
 import ConfigureCommand from './ConfigureCommand.js';
+import {shortcutManager} from '../services/shortcutManager.js';
 
 interface ConfigurationProps {
 	onComplete: () => void;
@@ -22,28 +23,49 @@ const Configuration: React.FC<ConfigurationProps> = ({onComplete}) => {
 
 	const menuItems: MenuItem[] = [
 		{
-			label: '⌨  Configure Shortcuts',
+			label: 'S ⌨  Configure Shortcuts',
 			value: 'shortcuts',
 		},
 		{
-			label: '🔧  Configure Status Hooks',
+			label: 'H 🔧  Configure Status Hooks',
 			value: 'hooks',
 		},
 		{
-			label: '📁  Configure Worktree Settings',
+			label: 'W 📁  Configure Worktree Settings',
 			value: 'worktree',
 		},
 		{
-			label: '🚀  Configure Command',
+			label: 'C 🚀  Configure Command',
 			value: 'command',
 		},
 		{
-			label: '← Back to Main Menu',
+			label: 'B ← Back to Main Menu',
 			value: 'back',
 		},
 	];
 
+	const handleSelect = (item: MenuItem) => {
+		if (item.value === 'back') {
+			onComplete();
+		} else if (item.value === 'shortcuts') {
+			setView('shortcuts');
+		} else if (item.value === 'hooks') {
+			setView('hooks');
+		} else if (item.value === 'worktree') {
+			setView('worktree');
+		} else if (item.value === 'command') {
+			setView('command');
+		}
+	};
+
+	const handleSubMenuComplete = () => {
+		setView('menu');
+	};
+
+	// Handle hotkeys (only when in menu view)
 	useInput((input, key) => {
+		if (view !== 'menu') return; // Only handle hotkeys in menu view
+
 		const keyPressed = input.toLowerCase();
 
 		switch (keyPressed) {
@@ -64,28 +86,11 @@ const Configuration: React.FC<ConfigurationProps> = ({onComplete}) => {
 				break;
 		}
 
-		if (key.escape) {
+		// Handle escape key
+		if (shortcutManager.matchesShortcut('cancel', input, key)) {
 			onComplete();
 		}
 	});
-
-	const handleSelect = (item: MenuItem) => {
-		if (item.value === 'back') {
-			onComplete();
-		} else if (item.value === 'shortcuts') {
-			setView('shortcuts');
-		} else if (item.value === 'hooks') {
-			setView('hooks');
-		} else if (item.value === 'worktree') {
-			setView('worktree');
-		} else if (item.value === 'command') {
-			setView('command');
-		}
-	};
-
-	const handleSubMenuComplete = () => {
-		setView('menu');
-	};
 
 	if (view === 'shortcuts') {
 		return <ConfigureShortcuts onComplete={handleSubMenuComplete} />;
@@ -116,12 +121,6 @@ const Configuration: React.FC<ConfigurationProps> = ({onComplete}) => {
 			</Box>
 
 			<SelectInput items={menuItems} onSelect={handleSelect} isFocused={true} />
-
-			<Box marginTop={1}>
-				<Text dimColor>
-					Hotkeys: S-Shortcuts H-Hooks W-Worktree C-Command B/Esc-Back
-				</Text>
-			</Box>
 		</Box>
 	);
 };
